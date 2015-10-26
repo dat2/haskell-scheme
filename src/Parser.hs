@@ -45,6 +45,8 @@ parseAtom = do
   return $ case atom of
     "#t" -> Bool True
     "#f" -> Bool False
+    -- turn else into true to make life easy
+    "else" -> Bool True
     _ -> Atom atom
 
 -- taken from
@@ -57,6 +59,8 @@ readNumber r = Number . fst . head . r
 
 -- parse a number
 -- liftM :: (a -> r) -> m a -> m r
+-- parsec is so annoying with back tracking
+-- TODO hexadecimal [a-fA-F]
 parseNumber :: Parser LispVal
 parseNumber = do
   prefix <- option 'd' $ do { char '#'; oneOf "xobd" }
@@ -100,6 +104,7 @@ parseQuoted = do
 -- parse expression
 parseExpr :: Parser LispVal
 parseExpr =   try parseNumber
+          <|> try parseChar
           <|> parseAtom
           <|> parseString
           <|> parseQuoted
