@@ -3,22 +3,28 @@ module Eval where
 
 import Ast
 import Errors
+import Env
 
 import Control.Monad.Except
 
-eval :: LispVal -> Throws LispVal
-eval val@(String _) = return val
-eval val@(Number _) = return val
-eval val@(Bool _) = return val
-eval (List [Atom "quote", val]) = return val
-eval (List [Atom "if", pred, conseq, alt]) = do
-  result <- eval pred
+eval :: Env -> LispVal -> IOThrows LispVal
+eval env val@(String _) = return val
+eval env val@(Number _) = return val
+eval env val@(Bool _) = return val
+eval env (Atom id) = getVar env id
+eval env (List [Atom "quote", val]) = return val
+eval env (List [Atom "if", pred, conseq, alt]) = do
+  result <- eval env pred
   case result of
-    Bool False -> eval alt
-    Bool True -> eval conseq
+    Bool False -> eval env alt
+    Bool True -> eval env conseq
     otherwise -> throwError $ TypeMismatch "boolean" pred
-eval (List (Atom f : args)) = mapM eval args >>= apply f
-eval val = return val
+eval env (List [Atom "set!", Atom var, form]) =
+  eval env form >>= setVar env var
+eval env (List [Atom "define", Atom var, form]) =
+  eval env form >>= defineVar env var
+eval env (List (Atom f : args)) = mapM (eval env) args >>= liftThrows . apply f
+eval env val = return val
 
 -- apply the function to its parameters
 apply :: String -> [LispVal] -> Throws LispVal
@@ -62,7 +68,7 @@ primitives = [("+", numericBinop (+)),
               ("eq?", iseqv),
               ("eqv?", iseqv),
               ("equal?", isequal),
-              ("cond", cond),
+              -- ("cond", cond),
               ("make-string", makestring),
               ("string", string),
               ("string-length", stringlength),
@@ -198,6 +204,7 @@ isequal [v1, v2] = do
 
 isequal args = throwError $ NumArgs 2 args
 
+{-
 cond :: [LispVal] -> Throws LispVal
 cond ((List [test,rtn]):rest) = do
   result <- eval test
@@ -205,6 +212,7 @@ cond ((List [test,rtn]):rest) = do
     Bool True -> eval rtn
     Bool False -> cond rest
 cond [] = throwError NonExhaustive
+-}
 
 makestring :: [LispVal] -> Throws LispVal
 makestring [Number n, Character c] = return $ String $ replicate (fromIntegral n) c

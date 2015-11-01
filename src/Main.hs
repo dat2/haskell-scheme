@@ -5,27 +5,32 @@ import System.Console.Haskeline
 
 import Ast
 import Parser
+import Env
 import Eval
 import Errors
 
 import Control.Monad
 import Control.Monad.Except
 
-interpret :: String -> IO String
-interpret input = return $ either show show $ runExcept $ readExpr input >>= eval
+interpret :: Env -> String -> IO String
+interpret env input = do
+  e <- runExceptT $ liftThrows (readExpr input) >>= eval env
+  return $ either show show e
 
 evalFile :: String -> IO ()
-evalFile s = readFile s >>= interpret >>= putStrLn
+evalFile s = do
+  env <- newEnv
+  readFile s >>= interpret env >>= putStrLn
 
 repl :: IO ()
-repl = runInputT defaultSettings loop
+repl = runInputT defaultSettings $ do { env <- liftIO newEnv; loop env }
   where
-    loop = do
+    loop env = do
       result <- getInputLine "scheme> "
       case result of
         Nothing -> return ()
         Just "quit" -> return ()
-        Just s -> liftIO (interpret s) >>= outputStrLn >> loop
+        Just s -> liftIO (interpret env s) >>= outputStrLn >> loop env
 
 main :: IO ()
 main = do
