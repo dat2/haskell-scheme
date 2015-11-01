@@ -60,7 +60,8 @@ executable scheme
   build-depends:
     base >=4.8 && <4.9,
     parsec == 3.1.9,
-    mtl == 2.2.1
+    mtl == 2.2.1,
+    haskeline == 0.7.2.1
 
   -- Directories containing source files.
   hs-source-dirs:      src
