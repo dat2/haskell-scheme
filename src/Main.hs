@@ -1,16 +1,14 @@
 module Main where
 
-import System.Environment
-import System.Console.Haskeline
-
-import Ast
-import Parser
-import Env
 import Eval
-import Errors
+import Parser
+import Types
 
 import Control.Monad
 import Control.Monad.Except
+
+import System.Environment
+import System.Console.Haskeline
 
 interpret :: Env -> String -> IO String
 interpret env input = do
@@ -23,10 +21,10 @@ evalFile s = do
   readFile s >>= interpret env >>= putStrLn
 
 repl :: IO ()
-repl = runInputT defaultSettings $ do { env <- liftIO newEnv; loop env }
+repl = runInputT defaultSettings $ liftIO nativeBindings >>= loop
   where
     loop env = do
-      result <- getInputLine "scheme> "
+      result <- getInputLine "lisp> "
       case result of
         Nothing -> return ()
         Just "quit" -> return ()

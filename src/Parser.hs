@@ -1,14 +1,12 @@
 module Parser where
 
-import Text.ParserCombinators.Parsec hiding (spaces)
+import Types
+
 import Control.Monad
 import Control.Monad.Except
-
-import Numeric
 import Data.Char (digitToInt)
-
-import Ast
-import Errors
+import Numeric
+import Text.ParserCombinators.Parsec hiding (spaces)
 
 symbol :: Parser Char
 symbol = oneOf "!#$%&|*+-/:<=>?@^_~"
