@@ -1,4 +1,4 @@
-(load "stdlib.scm")
+(load "stdlib.ss")
 
 (define (inc x) (+ x 1))
 
