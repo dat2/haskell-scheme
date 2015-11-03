@@ -2,6 +2,9 @@
 module Eval where
 
 import Types
+import Parser
+
+import System.IO
 
 import Control.Monad.Except
 
@@ -39,13 +42,16 @@ eval env (List (Atom "lambda" : DottedList params varargs : body)) =
 eval env (List (Atom "lambda" : varargs@(Atom _) : body)) =
   makeVarArgs varargs env [] body
 
+-- load returns the last one
+eval env (List [Atom "load", String filename]) =
+  load filename >>= liftM last . mapM (eval env)
+
 -- function application
 eval env (List (f : args)) = do
   func <- eval env f
   argVals <- mapM (eval env) args
-  apply env func argVals
+  apply func argVals
 
---
 eval env val = return val
 
 makeFunc varargs env params body = return $ Func (map show params) varargs body env
@@ -53,9 +59,9 @@ makeNormalFunc = makeFunc Nothing
 makeVarArgs = makeFunc . Just . show
 
 -- apply the function to its parameters
-apply :: Env -> LispVal -> [LispVal] -> IOThrows LispVal
-apply env (NativeFunc func) args = func env args
-apply _ (Func params varargs body closure) args =
+apply :: LispVal -> [LispVal] -> IOThrows LispVal
+apply (NativeFunc func) args = liftThrows $ func args
+apply (Func params varargs body closure) args =
   -- if the params don't match the args
   if num params /= num args && varargs == Nothing
      -- throw an error saying what we are expecting
@@ -73,15 +79,17 @@ apply _ (Func params varargs body closure) args =
     bindVarArgs arg env = case arg of
       Just argName -> liftIO $ bindVars env [(argName, List $ remainingArgs)]
       Nothing -> return env
-apply _ val args = throwError $ NotFunction "The value is not a function" $ show val
+apply (IOFunc func) args = func args
+apply val args = throwError $ NotFunction "The value is not a function" $ show val
 
 -- bound functions
 nativeBindings :: IO Env
-nativeBindings = newEnv >>= (flip bindVars $ map makeNativeFunc natives)
-  where makeNativeFunc (name, func) = (name, NativeFunc func)
+nativeBindings = newEnv >>= (flip bindVars $ map (makeFunc IOFunc) ioNatives
+                            ++ map (makeFunc NativeFunc) natives)
+  where makeFunc constructor (name, func) = (name, constructor func)
 
 -- a list of native functions
-natives :: [(String, Env -> [LispVal] -> IOThrows LispVal)]
+natives :: [(String, [LispVal] -> Throws LispVal)]
 natives = [("+", numericBinop (+)),
           ("-", numericBinop (-)),
           ("*", numericBinop (*)),
@@ -116,8 +124,6 @@ natives = [("+", numericBinop (+)),
           ("eq?", iseqv),
           ("eqv?", iseqv),
           ("equal?", isequal),
-          -- TODO make the things a function?
-          -- ("cond", cond),
           ("make-string", makestring),
           ("string", string),
           ("string-length", stringlength),
@@ -130,13 +136,13 @@ natives = [("+", numericBinop (+)),
           ("string-copy", undefined)]
 
 -- take a binary operator, apply it to a list
-numericBinop :: (Integer -> Integer -> Integer) -> Env -> [LispVal] -> IOThrows LispVal
-numericBinop op env []          = throwError $ NumArgs 2 []
-numericBinop op env single@[_]  = throwError $ NumArgs 2 single
-numericBinop op env params      = mapM unpackNum params >>= return . Number . foldl1 op
+numericBinop :: (Integer -> Integer -> Integer) -> [LispVal] -> Throws LispVal
+numericBinop op []          = throwError $ NumArgs 2 []
+numericBinop op single@[_]  = throwError $ NumArgs 2 single
+numericBinop op params      = mapM unpackNum params >>= return . Number . foldl1 op
 
-boolBinop :: (LispVal -> IOThrows a) -> (a -> a -> Bool) -> Env -> [LispVal] -> IOThrows LispVal
-boolBinop unpacker op env args =  if length args /= 2
+boolBinop :: (LispVal -> Throws a) -> (a -> a -> Bool) -> [LispVal] -> Throws LispVal
+boolBinop unpacker op args =  if length args /= 2
                                     then throwError $ NumArgs 2 args
                                     else do
                                       [l,r] <- mapM unpacker args
@@ -146,21 +152,21 @@ numBoolBinop = boolBinop unpackNum
 boolBoolBinop = boolBinop unpackBool
 stringBoolBinop = boolBinop unpackString
 
-unpackNum :: LispVal -> IOThrows Integer
+unpackNum :: LispVal -> Throws Integer
 unpackNum (Number n) = return n
 unpackNum notNumber = throwError $ TypeMismatch "number" notNumber
 
-unpackBool :: LispVal -> IOThrows Bool
+unpackBool :: LispVal -> Throws Bool
 unpackBool (Bool t) = return t
 unpackBool notBool = throwError $ TypeMismatch "boolean" notBool
 
-unpackString :: LispVal -> IOThrows String
+unpackString :: LispVal -> Throws String
 unpackString (String t) = return t
 unpackString notString = throwError $ TypeMismatch "string" notString
 
-data Unpacker = forall a. Eq a => AnyUnpacker (LispVal -> IOThrows a)
+data Unpacker = forall a. Eq a => AnyUnpacker (LispVal -> Throws a)
 
-unpackEquals :: LispVal -> LispVal -> Unpacker -> IOThrows Bool
+unpackEquals :: LispVal -> LispVal -> Unpacker -> Throws Bool
 unpackEquals v1 v2 (AnyUnpacker unp) =
     do
       u1 <- unp v1
@@ -168,117 +174,107 @@ unpackEquals v1 v2 (AnyUnpacker unp) =
       return $ u1 == u2
   `catchError` (const $ return False)
 
-isstring :: Env -> [LispVal] -> IOThrows LispVal
-isstring _ [String _] = return $ Bool True
-isstring _ l@(_:_) = throwError $ NumArgs 1 l
-isstring _ _ = return $ Bool False
+isstring :: [LispVal] -> Throws LispVal
+isstring [String _] = return $ Bool True
+isstring l@(_:_) = throwError $ NumArgs 1 l
+isstring _ = return $ Bool False
 
-isnumber :: Env -> [LispVal] -> IOThrows LispVal
-isnumber _ [Number _] = return $ Bool True
-isnumber _ l@(_:_) = throwError $ NumArgs 1 l
-isnumber _ _ = return $ Bool False
+isnumber :: [LispVal] -> Throws LispVal
+isnumber [Number _] = return $ Bool True
+isnumber l@(_:_) = throwError $ NumArgs 1 l
+isnumber _ = return $ Bool False
 
-issymbol :: Env -> [LispVal] -> IOThrows LispVal
-issymbol _ [Atom _] = return $ Bool True
-issymbol _ l@(_:_) = throwError $ NumArgs 1 l
-issymbol _ _ = return $ Bool False
+issymbol :: [LispVal] -> Throws LispVal
+issymbol [Atom _] = return $ Bool True
+issymbol l@(_:_) = throwError $ NumArgs 1 l
+issymbol _ = return $ Bool False
 
-isboolean :: Env -> [LispVal] -> IOThrows LispVal
-isboolean _ [Bool _] = return $ Bool True
-isboolean _ l@(_:_) = throwError $ NumArgs 1 l
-isboolean _ _ = return $ Bool False
+isboolean :: [LispVal] -> Throws LispVal
+isboolean [Bool _] = return $ Bool True
+isboolean l@(_:_) = throwError $ NumArgs 1 l
+isboolean _ = return $ Bool False
 
-islist :: Env -> [LispVal] -> IOThrows LispVal
-islist _ [List _] = return $ Bool True
-islist _ l@(_:_) = throwError $ NumArgs 1 l
-islist _ _ = return $ Bool False
+islist :: [LispVal] -> Throws LispVal
+islist [List _] = return $ Bool True
+islist l@(_:_) = throwError $ NumArgs 1 l
+islist _ = return $ Bool False
 
-ispair :: Env -> [LispVal] -> IOThrows LispVal
-ispair _ (List (_:[]):_) = return $ Bool False
-ispair _ (List (_:_):_) = return $ Bool True
-ispair _ (DottedList [] _:_) = return $ Bool False
-ispair _ (DottedList (_:_) _:_) = return $ Bool True
-ispair _ _ = return $ Bool False
+ispair :: [LispVal] -> Throws LispVal
+ispair (List (_:[]):_) = return $ Bool False
+ispair (List (_:_):_) = return $ Bool True
+ispair (DottedList [] _:_) = return $ Bool False
+ispair (DottedList (_:_) _:_) = return $ Bool True
+ispair _ = return $ Bool False
 
-not' :: Env -> [LispVal] -> IOThrows LispVal
-not' _ [Bool f] = return $ Bool $ not f
-not' _ l@(_:_) = throwError $ NumArgs 1 l
-not' _ _ = return $ Bool False
+not' :: [LispVal] -> Throws LispVal
+not' [Bool f] = return $ Bool $ not f
+not' l@(_:_) = throwError $ NumArgs 1 l
+not' _ = return $ Bool False
 
-symbolToString :: Env -> [LispVal] -> IOThrows LispVal
-symbolToString _ [Atom n] = return $ String n
-symbolToString _ l@(_:_) = throwError $ NumArgs 1 l
+symbolToString :: [LispVal] -> Throws LispVal
+symbolToString [Atom n] = return $ String n
+symbolToString l@(_:_) = throwError $ NumArgs 1 l
 
-car :: Env -> [LispVal] -> IOThrows LispVal
-car _ [(List (x:xs))] = return x
-car _ [(DottedList (x:xs) _)] = return x
-car _ [arg] = throwError $ TypeMismatch "pair" arg
-car _ args = throwError $ NumArgs 1 args
+car :: [LispVal] -> Throws LispVal
+car [(List (x:xs))] = return x
+car [(DottedList (x:xs) _)] = return x
+car [arg] = throwError $ TypeMismatch "pair" arg
+car args = throwError $ NumArgs 1 args
 
-cdr :: Env -> [LispVal] -> IOThrows LispVal
-cdr _ [(List (x:xs))] = return $ List xs
-cdr _ [(DottedList [_] r)] = return r
-cdr _ [(DottedList (_:xs) x)] = return $ DottedList xs x
-cdr _ [arg] = throwError $ TypeMismatch "pair" arg
-cdr _ args = throwError $ NumArgs 1 args
+cdr :: [LispVal] -> Throws LispVal
+cdr [(List (x:xs))] = return $ List xs
+cdr [(DottedList [_] r)] = return r
+cdr [(DottedList (_:xs) x)] = return $ DottedList xs x
+cdr [arg] = throwError $ TypeMismatch "pair" arg
+cdr args = throwError $ NumArgs 1 args
 
-cons :: Env -> [LispVal] -> IOThrows LispVal
-cons _ [x, List []] = return $ List [x]
-cons _ [x, List ls] = return $ List (x:ls)
-cons _ [x, DottedList ls tail] = return $ DottedList (x:ls) tail
-cons _ [x, y] = return $ DottedList [x] y
-cons _ args = throwError $ NumArgs 2 args
+cons :: [LispVal] -> Throws LispVal
+cons [x, List []] = return $ List [x]
+cons [x, List ls] = return $ List (x:ls)
+cons [x, DottedList ls tail] = return $ DottedList (x:ls) tail
+cons [x, y] = return $ DottedList [x] y
+cons args = throwError $ NumArgs 2 args
 
-iseqv :: Env -> [LispVal] -> IOThrows LispVal
-iseqv _ [(Bool l), (Bool r)] = return $ Bool (l == r)
-iseqv _ [(Number l), (Number r)] = return $ Bool (l == r)
-iseqv _ [(String l), (String r)] = return $ Bool (l == r)
-iseqv _ [(Character l), (Character r)] = return $ Bool (l == r)
-iseqv env [DottedList xs x, DottedList ys y] = iseqv env [List (xs ++ [x]),List (ys ++ [y])]
-iseqv env [List xs, List ys] = do
+iseqv :: [LispVal] -> Throws LispVal
+iseqv [(Bool l), (Bool r)] = return $ Bool (l == r)
+iseqv [(Number l), (Number r)] = return $ Bool (l == r)
+iseqv [(String l), (String r)] = return $ Bool (l == r)
+iseqv [(Character l), (Character r)] = return $ Bool (l == r)
+iseqv [DottedList xs x, DottedList ys y] = iseqv [List (xs ++ [x]),List (ys ++ [y])]
+iseqv [List xs, List ys] = do
   let zipped = zip xs ys
-  eqvs <- mapM (\(x,y) -> iseqv env [x,y]) zipped
+  eqvs <- mapM (\(x,y) -> iseqv [x,y]) zipped
   return $ Bool $ (length xs == length ys) && all isTrue eqvs
   where isTrue (Bool True) = True
         isTrue _ = False
-iseqv _ [_,_] = return $ Bool False
-iseqv _ args = throwError $ NumArgs 2 args
+iseqv [_,_] = return $ Bool False
+iseqv args = throwError $ NumArgs 2 args
 
-isequal :: Env -> [LispVal] -> IOThrows LispVal
-isequal env [v1, v2] = do
+isequal :: [LispVal] -> Throws LispVal
+isequal [v1, v2] = do
   primEquals <- liftM or $ mapM (unpackEquals v1 v2)
                 [AnyUnpacker unpackNum, AnyUnpacker unpackString, AnyUnpacker unpackBool]
-  (Bool x) <- iseqv env [v1, v2]
+  (Bool x) <- iseqv [v1, v2]
   return $ Bool $ (x || primEquals)
 
-isequal _ args = throwError $ NumArgs 2 args
+isequal args = throwError $ NumArgs 2 args
 
-cond :: Env -> [LispVal] -> IOThrows LispVal
-cond env ((List [test,rtn]):rest) = do
-  result <- eval env test
-  case result of
-    Bool True -> eval env rtn
-    Bool False -> cond env rest
-    -- TODO throw error about booleans
-    _ -> cond env rest
-cond _ [] = throwError NonExhaustive
+makestring :: [LispVal] -> Throws LispVal
+makestring [Number n, Character c] = return $ String $ replicate (fromIntegral n) c
+makestring [n@(Number _)] =  makestring [n, Character ' ']
+makestring args = throwError $ NumArgs 2 args
 
-makestring :: Env -> [LispVal] -> IOThrows LispVal
-makestring _ [Number n, Character c] = return $ String $ replicate (fromIntegral n) c
-makestring env [n@(Number _)] =  makestring env [n, Character ' ']
-makestring _ args = throwError $ NumArgs 2 args
-
-string :: Env -> [LispVal] -> IOThrows LispVal
-string _ [Character c] = return $ String [c]
-string env ((Character c):cs) = do
-  (String s) <- string env cs
+string :: [LispVal] -> Throws LispVal
+string [Character c] = return $ String [c]
+string ((Character c):cs) = do
+  (String s) <- string cs
   return $ String $ c:s
-string _ badArgs = throwError $ ErrorList $ map (TypeMismatch "character") badArgs
+string badArgs = throwError $ ErrorList $ map (TypeMismatch "character") badArgs
 
-stringlength :: Env -> [LispVal] -> IOThrows LispVal
-stringlength _ [String s] = return $ Number $ toInteger $ length s
-stringlength _ [arg] = throwError $ TypeMismatch "string" arg
-stringlength _ args = throwError $ NumArgs 1 args
+stringlength :: [LispVal] -> Throws LispVal
+stringlength [String s] = return $ Number $ toInteger $ length s
+stringlength [arg] = throwError $ TypeMismatch "string" arg
+stringlength args = throwError $ NumArgs 1 args
 
 -- checks if n e [min,max)
 withinBounds :: Int -> Int -> Int -> Bool
@@ -288,21 +284,21 @@ sublist :: Int -> Int -> [a] -> [a]
 sublist min max l = take (max - min) $ drop min l
 
 -- TODO proper error
-stringref :: Env -> [LispVal] -> IOThrows LispVal
-stringref _ [String s, Number ninteger] =
+stringref :: [LispVal] -> Throws LispVal
+stringref [String s, Number ninteger] =
   let
     n = fromIntegral ninteger
   in
     if withinBounds 0 (length s) n
       then return $ Character $ s !! n
       else throwError $ IndexError n (length s)
-stringref _ [f,s] = throwError $ ErrorList [TypeMismatch "string" f, TypeMismatch "number" s]
-stringref _ args = throwError $ NumArgs 2 args
+stringref [f,s] = throwError $ ErrorList [TypeMismatch "string" f, TypeMismatch "number" s]
+stringref args = throwError $ NumArgs 2 args
 
 -- TODO  proper error
 -- TODO fix <<loop>>
-substring :: Env -> [LispVal] -> IOThrows LispVal
-substring _ [Number st, Number en, String s] =
+substring :: [LispVal] -> Throws LispVal
+substring [Number st, Number en, String s] =
   let
     start = fromIntegral st
     end = fromIntegral end
@@ -311,5 +307,54 @@ substring _ [Number st, Number en, String s] =
     if withinBounds 0 len start && withinBounds 0 len end && start < end
       then return $ String $ sublist start end s
       else throwError $ ErrorList [IndexError start len, IndexError end len]
-substring _ [f,s,t] = throwError $ ErrorList [TypeMismatch "number" f, TypeMismatch "number" s, TypeMismatch "string" t]
-substring _ args = throwError $ NumArgs 3 args
+substring [f,s,t] = throwError $ ErrorList [TypeMismatch "number" f, TypeMismatch "number" s, TypeMismatch "string" t]
+substring args = throwError $ NumArgs 3 args
+
+ioNatives :: [(String, [LispVal] -> IOThrows LispVal)]
+ioNatives = [ ("apply", applyProc),
+              ("open-input-file", makePort ReadMode),
+              ("open-output-file", makePort WriteMode),
+              ("close-input-port", closePort),
+              ("close-output-port", closePort),
+              ("read", readProc),
+              ("write", writeProc),
+              ("read-contents", readContents),
+              ("read-all", readAll) ]
+
+-- apply f to list
+applyProc :: [LispVal] -> IOThrows LispVal
+applyProc [func, List args] = apply func args
+applyProc (func : args) = apply func args
+applyProc args = throwError $ NotFunction "The value is not a function" (show args)
+
+-- make a new IO port and return it
+makePort :: IOMode -> [LispVal] -> IOThrows LispVal
+makePort mode [String filename] = liftM Port $ liftIO $ openFile filename mode
+
+-- close IO port
+closePort :: [LispVal] -> IOThrows LispVal
+closePort [Port port] = (liftIO $ hClose port) >> (return $ Bool True)
+closePort _ = return $ Bool False
+
+-- "eval"
+readProc :: [LispVal] -> IOThrows LispVal
+readProc [] = readProc [Port stdin]
+readProc [Port port] = (liftIO $ hGetLine port) >>= liftThrows . (readExpr)
+
+-- write a value to stdout, or to the port
+writeProc :: [LispVal] -> IOThrows LispVal
+writeProc [obj] = writeProc [obj, Port stdout]
+writeProc [obj, Port port] = liftIO $ hPrint port obj >> (return $ Bool True)
+
+-- read the contents of the file
+readContents :: [LispVal] -> IOThrows LispVal
+readContents [String filename] = liftM String $ liftIO $ readFile filename
+readContents badArg = throwError $ Default $ "An invalid value was given to read-contents: " ++ show badArg
+
+-- readAllLines in file
+load :: String -> IOThrows [LispVal]
+load filename = (liftIO $ readFile filename) >>= liftThrows . (readProgram filename)
+
+readAll :: [LispVal] -> IOThrows LispVal
+readAll [String filename] = liftM List $ load filename
+readAll badArg = throwError $ Default $ "An invalid value was given to read-all: " ++ show badArg

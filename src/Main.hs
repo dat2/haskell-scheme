@@ -12,13 +12,13 @@ import System.Console.Haskeline
 
 interpret :: Env -> String -> IO String
 interpret env input = do
-  e <- runExceptT $ liftThrows (readExpr input) >>= eval env
+  e <- runExceptT $ liftThrows (readProgram "lisp" input) >>= liftM last . mapM (eval env)
   return $ either show show e
 
-evalFile :: String -> IO ()
-evalFile s = do
-  env <- newEnv
-  readFile s >>= interpret env >>= putStrLn
+evalFile :: [String] -> IO ()
+evalFile (filename:args) = do
+  env <- nativeBindings >>= flip bindVars [("args", List $ map String args)]
+  readFile filename >>= interpret env >>= putStrLn
 
 repl :: IO ()
 repl = runInputT defaultSettings $ liftIO nativeBindings >>= loop
@@ -33,7 +33,6 @@ repl = runInputT defaultSettings $ liftIO nativeBindings >>= loop
 main :: IO ()
 main = do
   args <- getArgs
-  case (length args) of
-    0 -> repl
-    1 -> evalFile $ args !! 0
-    otherwise -> putStrLn "Error! Repl or file mode not selected"
+  if null args
+     then repl
+     else evalFile args

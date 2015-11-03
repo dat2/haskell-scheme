@@ -112,7 +112,13 @@ parseExpr =   try parseNumber
                 char ')'
                 return x
 
-readExpr :: String -> Throws LispVal
-readExpr input = case parse parseExpr "lisp" input of
+parseProgram :: Parser [LispVal]
+parseProgram = sepEndBy parseExpr spaces
+
+readExpr = readOrThrow "lisp" parseExpr
+readProgram f = readOrThrow f parseProgram
+
+readOrThrow :: String -> Parser a -> String -> Throws a
+readOrThrow filename parser input = case parse parser filename input of
   Left err -> throwError $ Parser err
   Right val -> return val

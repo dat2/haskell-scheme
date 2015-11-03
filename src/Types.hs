@@ -4,6 +4,7 @@ module Types where
 
 import Control.Monad.Except
 import Data.IORef
+import System.IO
 import Text.ParserCombinators.Parsec.Error
 
 {- Language primitives section -}
@@ -15,8 +16,10 @@ data LispVal =
   | String String
   | Character Char
   | Bool Bool
-  | NativeFunc (Env -> [LispVal] -> IOThrows LispVal)
+  | NativeFunc ([LispVal] -> Throws LispVal)
   | Func { params :: [String], vararg :: (Maybe String), body :: [LispVal], closure :: Env }
+  | IOFunc ([LispVal] -> IOThrows LispVal)
+  | Port Handle
 
 instance Show LispVal where
   show (Atom n) = n
@@ -33,6 +36,8 @@ instance Show LispVal where
       case vararg of
         Nothing -> ") ...)"
         Just arg -> " . " ++ arg ++ ") ...)"
+  show (IOFunc _) = "<io native>"
+  show (Port _) = "<io port>"
 
 unwordsList :: Show a => [a] -> String
 unwordsList = unwords . map show
